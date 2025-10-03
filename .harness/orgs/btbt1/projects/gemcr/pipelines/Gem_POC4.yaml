@@ -98,7 +98,7 @@ pipeline:
                         name: build
                         identifier: build
                         spec:
-                          connectorRef: account.Docker_Remote_GAR
+                          connectorRef: account.gcp_rtl_ssv_release_gar
                           image: python
                           shell: Sh
                           command: |-
