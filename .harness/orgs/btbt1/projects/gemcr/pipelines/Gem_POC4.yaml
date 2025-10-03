@@ -38,10 +38,10 @@ pipeline:
                         name: Setup
                         identifier: Setup_Python
                         spec:
-                          connectorRef: account.Docker_Remote_GAR
+                          connectorRef: account.gcp_rtl_ssv_release_gar
                           image: europe-docker.pkg.dev/dv-sts-psv-tool-svc-bak-08870/staging/docker.io/curlimages/curl:8.11.0
                           shell: Sh
-                          command: |
+                          command: |-
                             cat <<'EOF' > /harness/pip.conf
                             [global]
                             index=https://nexus-osg.tooling01.dev.c2.lloydsbanking.cloud/repository/python-proxy/pypi
@@ -71,7 +71,11 @@ pipeline:
                             fi
                           outputVariables:
                             - name: PKG_NAME
+                              type: String
+                              value: PKG_NAME
                             - name: PKG_VERSION
+                              type: String
+                              value: PKG_VERSION
                           resources:
                             limits:
                               cpu: "1"
