@@ -9,125 +9,549 @@ pipeline:
       codebase:
         connectorRef: harnessgitconnector
         build: <+input>
+        sparseCheckout: []
   stages:
     - stage:
-        name: CI Build
-        identifier: CI_Build
-        description: ""
         type: CI
         spec:
           cloneCodebase: true
-          caching:
-            enabled: true
-            override: false
           infrastructure:
             type: KubernetesDirect
             spec:
-              connectorRef: Gem_kube
-              namespace: ns-aced9b
-              automountServiceAccountToken: true
-              nodeSelector: {}
+              connectorRef: account.central_ci
+              namespace: harness-delegate-ng
+              annotations:
+                dynatrace.com/inject: "false"
+              automountServiceAccountToken: false
+              tolerations:
+                - effect: NoSchedule
+                  key: user-pre
+                  operator: Equal
+                  value: dedicated
+              nodeSelector:
+                node_pool: ew2-psv-pre-tool01-svp01-knp01-user
+              containerSecurityContext:
+                capabilities:
+                  drop:
+                    - ALL
+                privileged: true
+                allowPrivilegeEscalation: true
+              harnessImageConnectorRef: account.harness_ci_addon_rtl
               os: Linux
           execution:
             steps:
-              - stepGroup:
-                  stageType: CI
-                  steps:
-                    - step:
-                        type: Run
-                        name: Setup
-                        identifier: Setup_Python
-                        spec:
-                          connectorRef: account.gcp_rtl_ssv_release_gar
-                          image: europe-docker.pkg.dev/dv-sts-psv-tool-svc-bak-08870/staging/docker.io/curlimages/curl:8.11.0
-                          shell: Sh
-                          command: |-
-                            cat <<'EOF' > /harness/pip.conf
-                            [global]
-                            index=https://nexus-osg.tooling01.dev.c2.lloydsbanking.cloud/repository/python-proxy/pypi
-                            index-url=https://nexus-osg.tooling01.dev.c2.lloydsbanking.cloud/repository/python-proxy/simple
-                            trusted-host=nexus-osg.tooling01.dev.c2.lloydsbanking.cloud
-                            cache-dir=/shared/pipcache
-                            EOF
-                            cat <<'EOF' > /harness/.pypirc
-                            [distutils]
-                            index-servers =
-                                pypi
+              - parallel:
+                  - stepGroup:
+                      name: Restore Cache
+                      identifier: Restore_Cache
+                      template:
+                        templateRef: account.CI_StepGroup_Restore_Cache
+                        versionLabel: v0.x.x
+                        templateInputs:
+                          variables:
+                            - name: CACHE_KEY
+                              type: String
+                              value: "{{ checksum \"<+stage.variables.DEPENDENCY_FILE>\" }}"
+                            - name: SKIP_RESTORE
+                              type: String
+                              value: <+input>.default(false).allowedValues(true,false)
+                            - name: BUCKET_TYPE
+                              type: String
+                              value: build
+                  - step:
+                      type: Run
+                      name: Initialise Build Engine
+                      identifier: Initialise_Build_Engine
+                      spec:
+                        connectorRef: account.gcp_rtl_ssv_release_gar
+                        image: europe-docker.pkg.dev/ssv-rtl-devops-registry-624/release/python:<+stage.variables.PYTHON_VERSION>
+                        shell: Sh
+                        command: |-
+                          #!/bin/bash
+                          mkdir -p /shared/customer_artifacts/certificates
 
-                            [pypi]
-                            repository = https://nexus-osg.tooling01.dev.c2.lloydsbanking.cloud/repository/python-proxy/pypi
-                            EOF
-                            curl -o /harness/cacert.pem https://dev.vault.02c5d1d0-4e30-4111-bc2f-6a0c7cc5677c.aws.hashicorp.cloud:8200/v1/admin/dev/pki/root/ca/pem
-                            file="/harness/pyproject.toml"
-                            if [ "<+stepGroup.variables.name_override>" = null ]; then
-                              PKG_NAME=$(awk -F'[ ="]+' '$1 == "name" { print $2 }' $file)
-                            else
-                              PKG_NAME=<+stepGroup.variables.name_override>
-                            fi
-                            if [ "<+stepGroup.variables.vers_override>" = null ]; then
-                              PKG_VERSION=$(awk -F'[ ="]+' '$1 == "version" { print $2 }' $file)
-                            else
-                              PKG_VERSION=<+stepGroup.variables.vers_override>
-                            fi
-                          outputVariables:
-                            - name: PKG_NAME
-                              type: String
-                              value: PKG_NAME
-                            - name: PKG_VERSION
-                              type: String
-                              value: PKG_VERSION
-                          resources:
-                            limits:
-                              cpu: "1"
-                  variables:
-                    - name: name_override
-                      type: String
-                      value: <+input>
-                      description: App name override - Required only if not in pyproject.toml, or to override pyproject.toml
-                    - name: vers_override
-                      type: String
-                      value: <+input>
-                      description: App version override - Required only if not in pyproject.toml, or to override pyproject.toml
-                  name: Init
-                  identifier: Init
+                          CURRENT_CERTS=$(cat /etc/ssl/certs/ca-bundle.crt)
+                          cat << EOF >> /shared/customer_artifacts/certificates/pythonProxyCert.pem
+                          $CURRENT_CERTS
+                          EOF
+
+                          cat <<EOF > /harness/pip.conf
+                          [global]
+                          index=https://<+secrets.getValue("account.nexus_sar_reader_token_name")>:<+secrets.getValue("account.nexus_sar_reader_token_pass")>@artefacts.lloydsbanking.cloud/repository/pypi-osg-proxy/
+                          index-url=https://<+secrets.getValue("account.nexus_sar_reader_token_name")>:<+secrets.getValue("account.nexus_sar_reader_token_pass")>@artefacts.lloydsbanking.cloud/repository/pypi-osg-proxy/simple
+                          extra-index-url=  \
+                              https://<+secrets.getValue("account.nexus_sar_reader_token_name")>:<+secrets.getValue("account.nexus_sar_reader_token_pass")>@artefacts.lloydsbanking.cloud/repository/private-<+org.identifier>_<+project.identifier>-python-group/simple \
+                              https://<+secrets.getValue("account.nexus_sar_reader_token_name")>:<+secrets.getValue("account.nexus_sar_reader_token_pass")>@artefacts.lloydsbanking.cloud/repository/innersource-<+org.identifier>_<+project.identifier>-python-group/simple
+                          trusted-host=artefacts.lloydsbanking.cloud
+                          cache-dir=/shared/pipcache
+                          EOF
+
+                          #Define SAR repository to push the artefacts
+
+                          if [ "<+stage.variables.NEXUS_REGISTRY_VERSION>" = "staging" ] ; then
+                            SAR_REPO="https://artefacts.lloydsbanking.cloud/repository/<+stage.variables.NEXUS_REGISTRY_VISIBILITY>-harprd_brgtst-python-staging/"
+                          else
+                            SAR_REPO="https://artefacts.lloydsbanking.cloud/repository/<+stage.variables.NEXUS_REGISTRY_VISIBILITY>-harprd_brgtst-python/"
+                          fi
+
+                          echo $SAR_REPO
+                          cat <<EOF > /harness/.pypirc
+                          [distutils]
+                          index-servers =
+                              pypi
+
+                          [pypi]
+                          repository = $SAR_REPO
+                          EOF
+
+
+                          file="/harness/pyproject.toml"
+                          if [ "<+stage.variables.NAME_OVERRIDE>" = "null" ] || [ "<+stage.variables.NAME_OVERRIDE>" = "" ]; then
+                            PKG_NAME=$(awk -F'[ ="]+' '$1 == "name" { print $2 }' $file)
+                          else
+                            PKG_NAME=<+stage.variables.NAME_OVERRIDE>
+                          fi
+                          if [ "<+stage.variables.VERS_OVERRIDE>" = "null" ] || [ "<+stage.variables.VERS_OVERRIDE>" = "" ]; then
+                            PKG_VERSION=$(awk -F'[ ="]+' '$1 == "version" { print $2 }' $file)
+                          else
+                            PKG_VERSION=<+stage.variables.VERS_OVERRIDE>
+                          fi
+
+                          ARTIFACT_URL=https://artefacts.lloydsbanking.cloud/#browse/browse:<+stage.variables.NEXUS_REGISTRY_VISIBILITY>-harprd_brgtst-python-staging:$(awk -F'[ ="]+' '$1 == "name" { print $2 }' $file)%2F$(awk -F'[ ="]+' '$1 == "version" { print $2 }' $file)
+                        outputVariables:
+                          - name: PKG_NAME
+                          - name: PKG_VERSION
+                          - name: ARTIFACT_URL
+                      when: <+input>
+              - step:
+                  type: Run
+                  name: Run Unit Tests
+                  identifier: Run_Unit_Tests
+                  spec:
+                    connectorRef: account.gcp_rtl_ssv_release_gar
+                    image: europe-docker.pkg.dev/ssv-rtl-devops-registry-624/release/python:<+stage.variables.PYTHON_VERSION>
+                    shell: Sh
+                    command: |-
+                      export PIP_CONFIG_FILE=/harness/pip.conf
+                      log_level=<+stage.variables.PYTHON_LOG_LEVEL>
+                      flag=$( [ "$log_level" = "verbose" ] && echo "-v" || echo "" )
+
+                      pip3 install pytest $flag
+                      <+stage.variables.TEST_CMD_OVERRIDE> $flag
+                    resources:
+                      limits:
+                        memory: <+input>.default(4Gi).regex(^(500Mi|([5-7][0-9]{2}|[1-7][0-9]{3}|8000)Mi|([1-7]Gi|8Gi))$)
+                        cpu: <+input>.default(2).regex(^(500m|[5-9][0-9]{2}m|[1-3]([0-9]{2})?m?|[1-3](\.[0-9]+)?|4(\.0+)?)$)
+                  when: <+input>
               - stepGroup:
-                  stageType: CI
-                  steps:
-                    - step:
-                        type: Run
-                        name: build
-                        identifier: build
-                        spec:
-                          connectorRef: account.gcp_rtl_ssv_release_gar
-                          image: python
-                          shell: Sh
-                          command: |-
-                            export PIP_CONFIG_FILE=/harness/pip.conf
-                            pip3 install build
-                            <+stepGroup.variables.python_cmd_override>
-                          resources:
-                            limits:
-                              cpu: "1"
-                        when:
-                          stageStatus: Success
-                          condition: <+stepGroup.variables.python_version>==<+matrix.version>
-                  strategy:
-                    matrix:
-                      version:
-                        - 3.9.17
-                        - 3.10-slim
-                        - 3.11
-                        - 3.12
-                  variables:
-                    - name: python_cmd_override
-                      type: String
-                      value: <+input>.default(python3 -m build)
-                      description: Command override - If not specified template will execute `python3 -m build`
-                      required: false
-                    - name: python_version
-                      type: String
-                      description: ""
-                      required: false
-                      value: <+input>.default(3.11).allowedValues(3.9.17,3.10-slim,3.11,3.12)
-                  name: PB
-                  identifier: PB
+                  name: Sonarqube Scan
+                  identifier: Sonarqube_Scan
+                  template:
+                    templateRef: account.CI_StepGroup_Scan_Sonarqube
+                    versionLabel: v2.x.x
+                    templateInputs:
+                      steps:
+                        - step:
+                            identifier: Setup
+                            type: Run
+                            spec:
+                              resources:
+                                limits:
+                                  memory: <+input>
+                                  cpu: <+input>
+                        - step:
+                            identifier: Sonarqube_Scan
+                            type: Sonarqube
+                            spec:
+                              target:
+                                type: repository
+                                name: <+input>.default(<+pipeline.properties.ci.codebase.repoName>)
+                                variant: <+input>.default(<+<+codebase.build.type>=="PR"?<+codebase.sourceBranch>:<+codebase.branch>>)
+                              advanced:
+                                log:
+                                  level: <+input>
+                              resources:
+                                limits:
+                                  memory: <+input>.default(4Gi).regex(^(500Mi|([5-7][0-9]{2}|[1-7][0-9]{3}|8000)Mi|([1-7]Gi|8Gi))$)
+                                  cpu: <+input>.default(2).regex(^(500m|[5-9][0-9]{2}m|[1-3]([0-9]{2})?m?|[1-3](\.[0-9]+)?|4(\.0+)?)$)
+                        - step:
+                            identifier: publish
+                            type: Plugin
+                            spec:
+                              resources:
+                                limits:
+                                  memory: <+input>
+                                  cpu: <+input>
+                      variables:
+                        - name: SONAR_PROJECT_KEY
+                          type: String
+                          value: <+input>.default(harness_<+pipeline.tags.cmdb_appid>_<+pipeline.properties.ci.codebase.repoName>)
+                        - name: JAVA_BINARIES
+                          type: String
+                          value: <+input>.default(/harness)
+                          default: /harness
+                        - name: WORKSPACE
+                          type: String
+                          value: <+input>.default(/harness)
+                          default: /harness
+                        - name: AWAIT_QUALITYGATE
+                          type: String
+                          value: <+input>.default(true).allowedValues(true,false)
+              - step:
+                  type: Run
+                  name: Package Application
+                  identifier: Package_Application
+                  spec:
+                    connectorRef: account.gcp_rtl_ssv_release_gar
+                    image: europe-docker.pkg.dev/ssv-rtl-devops-registry-624/release/python:<+stage.variables.PYTHON_VERSION>
+                    shell: Sh
+                    command: |-
+                      export PIP_CONFIG_FILE=/harness/pip.conf
+
+                      log_level=<+stage.variables.PYTHON_LOG_LEVEL>
+                      flag=$( [ "$log_level" = "verbose" ] && echo "-v" || echo "" )
+
+                      pip3 install build $flag
+                      <+stage.variables.BUILD_CMD_OVERRIDE> $flag
+                      pip3 download . --dest dist $flag
+                    resources:
+                      limits:
+                        memory: <+input>.default(4Gi).regex(^(500Mi|([5-7][0-9]{2}|[1-7][0-9]{3}|8000)Mi|([1-7]Gi|8Gi))$)
+                        cpu: <+input>.default(2).regex(^(500m|[5-9][0-9]{2}m|[1-3]([0-9]{2})?m?|[1-3](\.[0-9]+)?|4(\.0+)?)$)
+                  when: <+input>
+              - parallel:
+                  - stepGroup:
+                      name: SBOM Scan and D3 Publish
+                      identifier: SBOM_Scan_and_D3_Publish
+                      steps:
+                        - stepGroup:
+                            name: SBOM
+                            identifier: SBOM
+                            template:
+                              templateRef: account.CI_StepGroup_SBOM_Generate
+                              versionLabel: v4.x.x
+                              templateInputs:
+                                steps:
+                                  - step:
+                                      identifier: Generate_SBOM
+                                      type: Run
+                                      resources:
+                                        limits:
+                                          memory: <+input>.default(1Gi).regex(^(500Mi|([5-7][0-9]{2}|[1-7][0-9]{3}|8000)Mi|([1-7]Gi|8Gi))$)
+                                          cpu: <+input>.default(1).regex(^(500m|[5-9][0-9]{2}m|[1-3]([0-9]{2})?m?|[1-3](\.[0-9]+)?|4(\.0+)?)$)
+                                variables:
+                                  - name: SOURCE
+                                    type: String
+                                    value: <+stage.variables.ARTEFACT_CACHE_LOCATION>
+                                  - name: CMDB_APPID
+                                    type: String
+                                    value: <+pipeline.tags.cmdb_appid>
+                                  - name: BASE
+                                    type: String
+                                    value: /harness
+                                  - name: NAME
+                                    type: String
+                                    value: <+stage.spec.execution.steps.Initialise_Build_Engine.output.outputVariables.PKG_NAME>
+                                  - name: VERSION
+                                    type: String
+                                    value: <+stage.spec.execution.steps.Initialise_Build_Engine.output.outputVariables.PKG_VERSION>
+                                  - name: SCOPE
+                                    type: String
+                                    value: <+input>.default(all-layers)
+                                  - name: OUTPUT
+                                    type: String
+                                    value: cyclonedx-json@1.4=/harness/sbom.json,cyclonedx-xml@1.4=/harness/sbom/bom.xml
+                                  - name: PARALLELISM
+                                    type: String
+                                    value: <+input>.default("1")
+                                  - name: ENRICH
+                                    type: String
+                                    value: <+input>.default(off).allowedValues(all,golang,java,javascript,off)
+                                    default: "off"
+                                  - name: VERBOSITY
+                                    type: String
+                                    value: <+input>.default(off).allowedValues(off, info, debug)
+                                failureStrategies: <+input>
+                                when: <+input>
+                        - stepGroup:
+                            name: D3 Publish
+                            identifier: D3_Publish
+                            template:
+                              templateRef: account.CI_StepGroup_D3_Submit
+                              versionLabel: v0.x.x
+                              templateInputs:
+                                variables:
+                                  - name: URL
+                                    type: String
+                                    value: <+input>.default(https://prd-d3-apis.tool01-ew2.c2.lbgcp.cloud/v1/events/providers/standard_managed_pipeline/prod).allowedValues(https://pre-d3-apis.tool01-pre-ew2.c2.test.lbgcp.cloud/v1/events/providers/standard_managed_pipeline/nonprod,https://prd-d3-apis.tool01-ew2.c2.lbgcp.cloud/v1/events/providers/standard_managed_pipeline/prod)
+                                  - name: SBOM
+                                    type: String
+                                    value: <+stage.spec.execution.steps.SBOM_Scan_and_D3_Publish.steps.SBOM.steps.Generate_SBOM.output.outputVariables.CYCLONEDX_JSON_PATH>
+                                  - name: KEY
+                                    type: String
+                                    value: <+input>.default(<+secrets.getValue("account.d3_hmac_secret_key_prd")>)
+                                  - name: SKIPTLS
+                                    type: String
+                                    value: <+input>.default(false).allowedValues(true, false)
+                                  - name: DEBUG
+                                    type: String
+                                    value: <+input>.default(false).allowedValues(true, false)
+                                when: <+input>
+                                failureStrategies: <+input>
+                  - stepGroup:
+                      name: Save Dependency Cache
+                      identifier: Save_Dependency_Cache
+                      template:
+                        templateRef: account.CI_StepGroup_Save_Cache
+                        versionLabel: v0.x.x
+                        templateInputs:
+                          variables:
+                            - name: CACHE_KEY
+                              type: String
+                              value: "{{ checksum \"<+stage.variables.DEPENDENCY_FILE>\" }}"
+                            - name: CACHE_PATH
+                              type: String
+                              value: /shared/pipcache
+                            - name: SKIP_SAVE
+                              type: String
+                              value: <+input>.default(false).allowedValues(true,false)
+                            - name: BUCKET_TYPE
+                              type: String
+                              value: build
+                  - stepGroup:
+                      name: Publish Step Group
+                      identifier: Publish_Step_Group
+                      steps:
+                        - stepGroup:
+                            name: NexusIQ Scan
+                            identifier: NexusIQ_Scan
+                            template:
+                              templateRef: account.CI_StepGroup_Scan_NexusIQ
+                              versionLabel: v1.x.x
+                              gitBranch: main
+                              templateInputs:
+                                steps:
+                                  - step:
+                                      identifier: NexusIQ_Scan
+                                      type: Run
+                                      spec:
+                                        resources:
+                                          limits:
+                                            memory: <+input>.default(1Gi).regex(^(500Mi|([5-7][0-9]{2}|[1-7][0-9]{3}|8000)Mi|([1-7]Gi|8Gi))$)
+                                            cpu: <+input>.default(1).regex(^(500m|[5-9][0-9]{2}m|[1-3]([0-9]{2})?m?|[1-3](\.[0-9]+)?|4(\.0+)?)$)
+                                variables:
+                                  - name: APPLICATION_ID
+                                    type: String
+                                    value: <+input>.default(<+pipeline.tags.cmdb_appid>-<+pipeline.properties.ci.codebase.repoName>-artefact)
+                                  - name: SCAN_TARGET
+                                    type: String
+                                    value: <+stage.variables.ARTEFACT_CACHE_LOCATION>
+                                failureStrategies: <+input>
+                                when: <+input>
+                        - step:
+                            type: Run
+                            name: Publish Application
+                            identifier: Publish_Application
+                            spec:
+                              connectorRef: account.gcp_rtl_ssv_release_gar
+                              image: europe-docker.pkg.dev/ssv-rtl-devops-registry-624/release/python:<+stage.variables.PYTHON_VERSION>
+                              shell: Sh
+                              command: |-
+                                echo "publishing application to SAR"
+
+                                    file="/harness/pyproject.toml"
+
+                                    pkg_name=$(awk -F'[ ="]+' '$1 == "name" { print $2 }' $file | tr '-' '_')
+
+                                    ls -al dist/
+
+                                    pkg_file_path=$(find dist/ -name "*${pkg_name}*" -name "*.whl*")
+
+
+                                    export PIP_CONFIG_FILE=/harness/pip.conf
+
+                                    pip3 install twine
+
+                                    log_level=<+stage.variables.PYTHON_LOG_LEVEL>
+                                    flag=$( [ "$log_level" = "verbose" ] && echo "--verbose" || echo "" )
+
+                                    STAGING_ARTIFACT_URL=""
+                                    RELEASE_ARTIFACT_URL=""
+
+
+                                    if [ "<+stage.variables.NEXUS_REGISTRY_VERSION>" = "staging" ] ; then
+
+                                      <+stage.variables.PUBLISH_CMD_OVERRIDE> upload $pkg_file_path --cert /shared/customer_artifacts/certificates/pythonProxyCert.pem --repository-url https://${STAGING_URL} $flag
+
+                                      STAGING_ARTIFACT_URL="https://artefacts.lloydsbanking.cloud/#browse/browse:${STAGING_REPOSITORY}:<+stage.spec.execution.steps.Initialise_Build_Engine.output.outputVariables.PKG_NAME.replace("@", "%40").replace("/", "%2f")>"
+
+                                      PUBLISH_ARTIFACT_URL=${STAGING_ARTIFACT_URL}
+
+                                    elif [ "<+stage.variables.NEXUS_REGISTRY_VERSION>" = "release" ] ; then
+
+                                      <+stage.variables.PUBLISH_CMD_OVERRIDE> upload $pkg_file_path --cert /shared/customer_artifacts/certificates/pythonProxyCert.pem --repository-url https://${RELEASE_URL} $flag
+
+                                      RELEASE_ARTIFACT_URL="https://artefacts.lloydsbanking.cloud/#browse/browse:${RELEASE_REPOSITORY}:<+stage.spec.execution.steps.Initialise_Build_Engine.output.outputVariables.PKG_NAME.replace("@", "%40").replace("/", "%2f")>"
+
+                                      PUBLISH_ARTIFACT_URL=${RELEASE_ARTIFACT_URL}
+                                    else
+
+                                      <+stage.variables.PUBLISH_CMD_OVERRIDE> upload $pkg_file_path --cert /shared/customer_artifacts/certificates/pythonProxyCert.pem --repository-url https://${STAGING_URL} $flag
+
+                                      <+stage.variables.PUBLISH_CMD_OVERRIDE> upload $pkg_file_path --cert /shared/customer_artifacts/certificates/pythonProxyCert.pem --repository-url https://${RELEASE_URL} $flag
+
+                                      STAGING_ARTIFACT_URL="https://artefacts.lloydsbanking.cloud/#browse/browse:${STAGING_REPOSITORY}:<+stage.spec.execution.steps.Initialise_Build_Engine.output.outputVariables.PKG_NAME.replace("@", "%40").replace("/", "%2f")>"
+
+                                      RELEASE_ARTIFACT_URL="https://artefacts.lloydsbanking.cloud/#browse/browse:${RELEASE_REPOSITORY}:<+stage.spec.execution.steps.Initialise_Build_Engine.output.outputVariables.PKG_NAME.replace("@", "%40").replace("/", "%2f")>"
+
+                                      PUBLISH_ARTIFACT_URL=$STAGING_ARTIFACT_URL,$RELEASE_ARTIFACT_URL
+                                    fi
+                              envVariables:
+                                TWINE_USERNAME: <+secrets.getValue("account.nexus_sar_writer_token_name")>
+                                TWINE_PASSWORD: <+secrets.getValue("account.nexus_sar_writer_token_pass")>
+                                STAGING_REPOSITORY: <+stage.variables.NEXUS_REGISTRY_VISIBILITY>-<+org.identifier>_<+project.identifier>-python-staging
+                                RELEASE_REPOSITORY: <+stage.variables.NEXUS_REGISTRY_VISIBILITY>-<+org.identifier>_<+project.identifier>-python
+                                STAGING_URL: artefacts.lloydsbanking.cloud/repository/<+stage.variables.NEXUS_REGISTRY_VISIBILITY>-<+org.identifier>_<+project.identifier>-python-staging/
+                                RELEASE_URL: artefacts.lloydsbanking.cloud/repository/<+stage.variables.NEXUS_REGISTRY_VISIBILITY>-<+org.identifier>_<+project.identifier>-python/
+                              outputVariables:
+                                - name: PUBLISH_ARTIFACT_URL
+                              resources:
+                                limits:
+                                  memory: <+input>.default(4Gi).regex(^(500Mi|([5-7][0-9]{2}|[1-7][0-9]{3}|8000)Mi|([1-7]Gi|8Gi))$)
+                                  cpu: <+input>.default(2).regex(^(500m|[5-9][0-9]{2}m|[1-3]([0-9]{2})?m?|[1-3](\.[0-9]+)?|4(\.0+)?)$)
+                            when: <+input>
+                        - step:
+                            type: Plugin
+                            name: Publish Artefact URL
+                            identifier: Publish_Artefact_URL
+                            spec:
+                              connectorRef: account.gcp_rtl_ssv_gar_ro_gsa
+                              image: europe-docker.pkg.dev/ssv-rtl-devops-registry-624/release/docker.io/plugins/artifact-metadata-publisher:2.0
+                              settings:
+                                file_urls: <+stage.spec.execution.steps.Publish_Step_Group.steps.Publish_Application.output.outputVariables.PUBLISH_ARTIFACT_URL>
+                                artifact_file: /harness/artifact
+                            when: <+input>
+                      when:
+                        stageStatus: Success
+                        condition: <+stage.variables.PUBLISH_PACKAGE>
+                  - stepGroup:
+                      name: Save Artefact Cache
+                      identifier: Save_Artefact_Cache
+                      template:
+                        templateRef: account.CI_StepGroup_Save_Cache
+                        versionLabel: v0.x.x
+                        templateInputs:
+                          variables:
+                            - name: CACHE_KEY
+                              type: String
+                              value: <+input>.default(<+account.identifier><+org.identifier>-<+project.identifier>-<+pipeline.executionId>)
+                            - name: CACHE_PATH
+                              type: String
+                              value: <+stage.variables.ARTEFACT_CACHE_LOCATION>
+                            - name: SKIP_SAVE
+                              type: String
+                              value: <+input>.default(false).allowedValues(true,false)
+                            - name: BUCKET_TYPE
+                              type: String
+                              value: artef
+              - step:
+                  type: Run
+                  name: Output
+                  identifier: Output
+                  spec:
+                    connectorRef: account.gcp_rtl_ssv_release_gar
+                    image: europe-docker.pkg.dev/ssv-rtl-devops-registry-624/release/python:<+stage.variables.PYTHON_VERSION>
+                    shell: Sh
+                    command: |-
+                      PKG_NAME=<+stage.spec.execution.steps.Initialise_Build_Engine.output.outputVariables.PKG_NAME>
+                      PKG_VERSION=<+stage.spec.execution.steps.Initialise_Build_Engine.output.outputVariables.PKG_VERSION>
+                      PKG_PATH=<+stage.spec.execution.steps.Initialise_Build_Engine.output.outputVariables.ARTIFACT_URL>
+                    outputVariables:
+                      - name: PKG_NAME
+                      - name: PKG_VERSION
+                      - name: PKG_PATH
+          sharedPaths:
+            - /shared
+            - /shared/scan_results
+            - /shared/pipcache
+          caching:
+            enabled: true
+            override: false
+        variables:
+          - name: DEPENDENCY_FILE
+            type: String
+            description: Override for dependency file if dependencies are not held in the pyproject.toml file
+            required: false
+            value: <+input>.default(pyproject.toml)
+          - name: PYTHON_VERSION
+            type: String
+            default: 3.13.3
+            description: Version of Python. Default version - 3.13.3. Available versions - 3.12.10, 3.13.3, 3.14.0b1.
+            required: false
+            value: <+input>.default(3.13.3).allowedValues(3.12.10,3.13.3,3.14.0b1)
+          - name: ARTEFACT_CACHE_LOCATION
+            type: String
+            description: Path of the Artefacts to be written to the Artefact Cache. Data stored in the Artefact cache will be available for retrieval only within subsequent Stages in the same pipeline run which generated the artefact
+            required: true
+            value: <+input>.default(dist)
+          - name: CMDB_APPID
+            type: String
+            description: CMDB_APPID of the pipeline. (e.g. al34524)
+            required: true
+            value: <+pipeline.tags.cmdb_appid>
+          - name: PYTHON_LOG_LEVEL
+            type: String
+            description: Python log level. Valid inputs - DEBUG, INFO, CRITICAL, WARNING, ERROR
+            required: true
+            value: <+input>.default(INFO).allowedValues(DEBUG,INFO,CRITICAL,WARNING,ERROR)
+          - name: NAME_OVERRIDE
+            type: String
+            description: App name override - Required only if not in pyproject.toml, or to override pyproject.toml
+            value: <+input>.regex(^[a-z0-9]*(?:[._-][a-z0-9]+)*$)
+          - name: VERS_OVERRIDE
+            type: String
+            description: App version override - Required only if not in pyproject.toml, or to override pyproject.toml
+            value: <+input>.regex(^[a-zA-Z0-9._-]*$)
+          - name: ORG_ID
+            type: String
+            description: "Override default org identifier with underscores replaced with hyphens so it is a valid string for container repository paths "
+            required: true
+            value: <+<+org.identifier>.toLowerCase().replace("_","-")>
+          - name: PROJECT_ID
+            type: String
+            description: Override default project identifier with underscores replaced with hyphens so it is a valid string for container repository paths
+            required: true
+            value: <+<+project.identifier>.toLowerCase().replace("_","-")>
+          - name: PUBLISH_PACKAGE
+            type: String
+            description: Boolean value for publishing to Nexus Sonatype Repository (SAR - artefacts.lloydsbanking.cloud)
+            required: true
+            value: <+input>.default(false).allowedValues(true, false)
+          - name: NEXUS_REGISTRY_VISIBILITY
+            type: String
+            description: Choose the visibility of your package in your T2 Nexus Sonatype Repository (innersource or private.) NOTE - this must have been created within backsatge first.
+            required: true
+            value: <+input>.default(private).allowedValues(innersource, private)
+          - name: NEXUS_REGISTRY_VERSION
+            type: String
+            description: Choose the version to push to for your package in your T2 Nexus Sonatype Repository (staging or release). NOTE - this must have been created within backstage first.
+            required: true
+            value: <+input>.default(staging).allowedValues(staging, release, both)
+          - name: TEST_CMD_OVERRIDE
+            type: String
+            description: Python test command. Default - pytest
+            required: true
+            value: <+input>.default(pytest)
+          - name: BUILD_CMD_OVERRIDE
+            type: String
+            description: Python build command. Default - pythong3 -m build
+            required: true
+            value: <+input>.default(python3 -m build)
+          - name: PUBLISH_CMD_OVERRIDE
+            type: String
+            description: Python publish command. Default - python3 -m twine
+            required: true
+            value: <+input>.default(python3 -m twine)
+        failureStrategies: <+input>
+        name: Py Build
+        identifier: Py_Build
