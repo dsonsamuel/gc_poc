@@ -11,523 +11,294 @@ pipeline:
         build: <+input>
   stages:
     - stage:
+        name: CI Build
+        identifier: CI_Build
+        description: ""
         type: CI
         spec:
           cloneCodebase: true
+          caching:
+            enabled: true
+            override: false
           infrastructure:
             type: KubernetesDirect
             spec:
-              connectorRef: account.central_ci
-              namespace: harness-delegate-ng
-              annotations:
-                dynatrace.com/inject: "false"
-              automountServiceAccountToken: false
-              tolerations:
-                - effect: NoSchedule
-                  key: user-pre
-                  operator: Equal
-                  value: dedicated
-              nodeSelector:
-                node_pool: ew2-psv-pre-tool01-svp01-knp01-user
-              containerSecurityContext:
-                capabilities:
-                  drop:
-                    - ALL
-                privileged: true
-                allowPrivilegeEscalation: true
-              harnessImageConnectorRef: account.harness_ci_addon_rtl
+              connectorRef: account.gcp_ew2_dev_caas_01_standard
+              namespace: ns-aced9b
+              automountServiceAccountToken: true
+              nodeSelector: {}
               os: Linux
-          sharedPaths:
-            - /usr/lib/containers/storage
-            - /var/tmp
           execution:
             steps:
-              - parallel:
-                  - stepGroup:
-                      name: Restore Artefact Cache
-                      identifier: CI_StepGroup_Restore_Cache
-                      template:
-                        templateRef: account.CI_StepGroup_Restore_Cache
-                        versionLabel: v0.x.x
-                        templateInputs:
-                          variables:
-                            - name: CACHE_KEY
-                              type: String
-                              value: <+input>.default(<+account.identifier><+org.identifier>-<+project.identifier>-<+pipeline.executionId>)
-                            - name: SKIP_RESTORE
-                              type: String
-                              value: <+input>.default(false).allowedValues(true,false)
-                            - name: BUCKET_TYPE
-                              type: String
-                              value: artef
-                  - step:
-                      type: Run
-                      name: Registry Authentication
-                      identifier: Registry_Authentication
-                      spec:
-                        connectorRef: account.gcp_rtl_ssv_release_gar
-                        image: europe-docker.pkg.dev/ssv-rtl-devops-registry-624/release/docker.io/plugins/buildah-docker:1.2
-                        shell: Sh
-                        command: |-
-                          set -e
-                          buildah login -u srv-harness-docker-global-read -p <+secrets.getValue("account.nexus_docker_sar_reader")> $INNERSOURCE_STAGING
-                          buildah login -u srv-harness-docker-global-read -p <+secrets.getValue("account.nexus_docker_sar_reader")> $INNERSOURCE_RELEASE
-                          buildah login -u srv-harness-docker-global-read -p <+secrets.getValue("account.nexus_docker_sar_reader")> $PRIVATE_STAGING
-                          buildah login -u srv-harness-docker-global-read -p <+secrets.getValue("account.nexus_docker_sar_reader")> $PRIVATE_RELEASE
-                        envVariables:
-                          INNERSOURCE_STAGING: <+stage.variables.SAR_INNERSOURCE_STAGING_HOST>
-                          INNERSOURCE_RELEASE: <+stage.variables.SAR_INNERSOURCE_RELEASE_HOST>
-                          PRIVATE_STAGING: <+stage.variables.SAR_PRIVATE_STAGING_HOST>
-                          PRIVATE_RELEASE: <+stage.variables.SAR_PRIVATE_RELEASE_HOST>
-              - step:
-                  type: Run
-                  name: Check Image
-                  identifier: Check_Image
-                  spec:
-                    connectorRef: account.gcp_rtl_ssv_release_gar
-                    image: europe-docker.pkg.dev/ssv-rtl-devops-registry-624/release/harness/crane:debug
-                    shell: Sh
-                    command: |
-                      set -e
-                      if [ -z "${CMDB_APPID}" ] || [ "${CMDB_APPID}" == "null" ]; then
-                        echo "Must specify pipeline.tags.cmdb_appid"
-                        exit 1
-                      fi
-                      if [ "$BUILD_TYPE" == "release" ]; then
-                        if [ "$SAR_REGISTRY_TYPE" == "private" ]; then
-                          export TARGET=<+stage.variables.SAR_PRIVATE_RELEASE_HOST>
-                          crane auth login -u srv-harness-docker-global-read -p <+secrets.getValue("account.nexus_docker_sar_reader")> <+stage.variables.SAR_PRIVATE_RELEASE_HOST>
-                          crane manifest $PRIVATE_RELEASE_IMAGE && {
-                            printf "\nImage $PRIVATE_RELEASE_IMAGE found, skipping Build"
-                            export BUILD=false
-                            export SHA=$(crane digest $PRIVATE_RELEASE_IMAGE)
-                          } || {
-                            printf "\nImage $PRIVATE_RELEASE_IMAGE not found, proceeding with Build"
-                            export BUILD=true
-                          }
-                        else
-                          export TARGET=<+stage.variables.SAR_INNERSOURCE_RELEASE_HOST>
-                          crane auth login -u srv-harness-docker-global-read -p <+secrets.getValue("account.nexus_docker_sar_reader")> <+stage.variables.SAR_INNERSOURCE_RELEASE_HOST>
-                          crane manifest $INNERSOURCE_RELEASE_IMAGE && {
-                            printf "\nImage $INNERSOURCE_RELEASE_IMAGE found, skipping Build"
-                            export BUILD=false
-                            export SHA=$(crane digest $INNERSOURCE_RELEASE_IMAGE)
-                          } || {
-                            printf "\nImage $INNERSOURCE_RELEASE_IMAGE not found, proceeding with Build"
-                            export BUILD=true
-                          }
-                        fi
-                      else
-                        if [ "$SAR_REGISTRY_TYPE" == "private" ]; then
-                          export TARGET=<+stage.variables.SAR_PRIVATE_STAGING_HOST>
-                          crane auth login -u srv-harness-docker-global-read -p <+secrets.getValue("account.nexus_docker_sar_reader")> <+stage.variables.SAR_PRIVATE_STAGING_HOST>
-                          crane manifest $PRIVATE_STAGING_IMAGE && {
-                            echo Image $PRIVATE_STAGING_IMAGE found, Build will overwrite
-                            export BUILD=true
-                          } || {
-                            echo Image $PRIVATE_STAGING_IMAGE not found, proceeding with Build
-                            export BUILD=true
-                          }
-                        else
-                          export TARGET=<+stage.variables.SAR_INNERSOURCE_STAGING_HOST>
-                          crane auth login -u srv-harness-docker-global-read -p <+secrets.getValue("account.nexus_docker_sar_reader")> <+stage.variables.SAR_INNERSOURCE_STAGING_HOST>
-                          crane manifest $INNERSOURCE_STAGING_IMAGE && {
-                            echo Image $INNERSOURCE_STAGING_IMAGE found, Build will overwrite
-                            export BUILD=true
-                          } || {
-                            echo Image $INNERSOURCE_STAGING_IMAGE not found, proceeding with Build
-                            export BUILD=true
-                          }
-                        fi
-                      fi
-                    envVariables:
-                      CMDB_APPID: <+stage.variables.CMDB_APPID>
-                      BUILD_TYPE: <+stage.variables.BUILD_TYPE>
-                      SAR_REGISTRY_TYPE: <+stage.variables.SAR_REGISTRY_TYPE>
-                      INNERSOURCE_STAGING_IMAGE: <+stage.variables.SAR_INNERSOURCE_STAGING_HOST>/<+<+org.identifier>.toLowerCase().replace("_","-")>/<+<+project.identifier>.toLowerCase().replace("_","-")>/<+pipeline.tags.cmdb_appid>/images/<+stage.variables.IMAGE_NAME>:<+stage.variables.IMAGE_TAG>
-                      INNERSOURCE_RELEASE_IMAGE: <+stage.variables.SAR_INNERSOURCE_RELEASE_HOST>/<+<+org.identifier>.toLowerCase().replace("_","-")>/<+<+project.identifier>.toLowerCase().replace("_","-")>/<+pipeline.tags.cmdb_appid>/images/<+stage.variables.IMAGE_NAME>:<+stage.variables.IMAGE_TAG>
-                      PRIVATE_STAGING_IMAGE: <+stage.variables.SAR_PRIVATE_STAGING_HOST>/<+<+org.identifier>.toLowerCase().replace("_","-")>/<+<+project.identifier>.toLowerCase().replace("_","-")>/<+pipeline.tags.cmdb_appid>/images/<+stage.variables.IMAGE_NAME>:<+stage.variables.IMAGE_TAG>
-                      PRIVATE_RELEASE_IMAGE: <+stage.variables.SAR_PRIVATE_RELEASE_HOST>/<+<+org.identifier>.toLowerCase().replace("_","-")>/<+<+project.identifier>.toLowerCase().replace("_","-")>/<+pipeline.tags.cmdb_appid>/images/<+stage.variables.IMAGE_NAME>:<+stage.variables.IMAGE_TAG>
-                    outputVariables:
-                      - name: BUILD
-                      - name: SHA
-                      - name: TARGET
-                  description: Check for existence of image on SAR registry
               - stepGroup:
-                  name: Build Image
-                  identifier: Build_Image
-                  template:
-                    templateRef: account.CI_StepGroup_Image_Build
-                    versionLabel: v2.x.x
-                    templateInputs:
-                      steps:
+                  stageType: CI
+                  steps:
+                    - step:
+                        type: Run
+                        name: Setup
+                        identifier: Setup_Python
+                        spec:
+                          connectorRef: account.Docker_Remote_GAR
+                          image: europe-docker.pkg.dev/dv-sts-psv-tool-svc-bak-08870/staging/docker.io/curlimages/curl:8.11.0
+                          shell: Sh
+                          command: |
+                            cat <<'EOF' > /harness/pip.conf
+                            [global]
+                            index=https://nexus-osg.tooling01.dev.c2.lloydsbanking.cloud/repository/python-proxy/pypi
+                            index-url=https://nexus-osg.tooling01.dev.c2.lloydsbanking.cloud/repository/python-proxy/simple
+                            trusted-host=nexus-osg.tooling01.dev.c2.lloydsbanking.cloud
+                            cache-dir=/shared/pipcache
+                            EOF
+                            cat <<'EOF' > /harness/.pypirc
+                            [distutils]
+                            index-servers =
+                                pypi
+
+                            [pypi]
+                            repository = https://nexus-osg.tooling01.dev.c2.lloydsbanking.cloud/repository/python-proxy/pypi
+                            EOF
+                            curl -o /harness/cacert.pem https://dev.vault.02c5d1d0-4e30-4111-bc2f-6a0c7cc5677c.aws.hashicorp.cloud:8200/v1/admin/dev/pki/root/ca/pem
+                            file="/harness/pyproject.toml"
+                            if [ "<+stepGroup.variables.name_override>" = null ]; then
+                              PKG_NAME=$(awk -F'[ ="]+' '$1 == "name" { print $2 }' $file)
+                            else
+                              PKG_NAME=<+stepGroup.variables.name_override>
+                            fi
+                            if [ "<+stepGroup.variables.vers_override>" = null ]; then
+                              PKG_VERSION=$(awk -F'[ ="]+' '$1 == "version" { print $2 }' $file)
+                            else
+                              PKG_VERSION=<+stepGroup.variables.vers_override>
+                            fi
+                          outputVariables:
+                            - name: PKG_NAME
+                            - name: PKG_VERSION
+                          resources:
+                            limits:
+                              cpu: "1"
+                  variables:
+                    - name: name_override
+                      type: String
+                      value: <+input>
+                      description: App name override - Required only if not in pyproject.toml, or to override pyproject.toml
+                    - name: vers_override
+                      type: String
+                      value: <+input>
+                      description: App version override - Required only if not in pyproject.toml, or to override pyproject.toml
+                  name: Init
+                  identifier: Init
+              - stepGroup:
+                  stageType: CI
+                  steps:
+                    - step:
+                        type: Run
+                        name: build
+                        identifier: build
+                        spec:
+                          connectorRef: account.Docker_Remote_GAR
+                          image: python
+                          shell: Sh
+                          command: |-
+                            export PIP_CONFIG_FILE=/harness/pip.conf
+                            pip3 install build
+                            <+stepGroup.variables.python_cmd_override>
+                          resources:
+                            limits:
+                              cpu: "1"
+                        when:
+                          stageStatus: Success
+                          condition: <+stepGroup.variables.python_version>==<+matrix.version>
+                  strategy:
+                    matrix:
+                      version:
+                        - 3.9.17
+                        - 3.10-slim
+                        - 3.11
+                        - 3.12
+                  variables:
+                    - name: python_cmd_override
+                      type: String
+                      value: <+input>.default(python3 -m build)
+                      description: Command override - If not specified template will execute `python3 -m build`
+                      required: false
+                    - name: python_version
+                      type: String
+                      description: ""
+                      required: false
+                      value: <+input>.default(3.11).allowedValues(3.9.17,3.10-slim,3.11,3.12)
+                  name: PB
+                  identifier: PB
+              - stepGroup:
+                  stageType: CI
+                  steps:
+                    - step:
+                        type: BuildAndPushGAR
+                        name: Build Image
+                        identifier: build_image
+                        spec:
+                          connectorRef: account.gcp_ddv_dv_staging_gar_gsa
+                          host: europe-docker.pkg.dev
+                          projectID: dv-sts-psv-tool-svc-bak-08870
+                          imageName: build/<+stepGroup.variables.ORG_ID>/<+stepGroup.variables.PROJECT_ID>/<+stepGroup.variables.CMDB_APPID>/images/<+stepGroup.variables.IMAGE_NAME>
+                          tags:
+                            - <+stepGroup.variables.IMAGE_TAG>
+                          caching: false
+                          dockerfile: <+input>
+                          buildArgs: <+input>
+                          remoteCacheImage: build/<+org.identifier>/<+project.identifier>/<+stepGroup.variables.CMDB_APPID>/images/<+stepGroup.variables.IMAGE_NAME>
+                          resources:
+                            limits:
+                              memory: 4Gi
+                              cpu: "2"
+                    - step:
+                        identifier: pull_image_to_tar
+                        type: Run
+                        name: Pull Image to Tar
+                        spec:
+                          connectorRef: account.gcp_ddv_dv_staging_gar
+                          image: europe-docker.pkg.dev/dv-sts-psv-tool-svc-bak-08870/staging/gcr.io/go-containerregistry/crane:debug
+                          shell: Sh
+                          command: |-
+                            # Fetch secrets based on the provided environment using identifier
+                            rm -f /harness/gcpdvstaginggarsa.json
+                            cat <<'EOF' >> /harness/gcpdvstaginggarsa.json
+                            <+secrets.getValue("account.gcp_ddv_dv_staging_gar_push_gsa_json_key")>
+                            EOF
+
+                            cat /harness/gcpdvstaginggarsa.json | crane auth login europe-docker.pkg.dev -u _json_key --password-stdin
+
+                            # Push the image
+                            crane pull ${SOURCE_IMAGE} ${TAR_PATH}
+
+                            rm -f /harness/gcpdvstaginggarsa.json
+                          envVariables:
+                            TAR_PATH: <+stepGroup.variables.TAR_PATH>
+                            SOURCE_IMAGE: <+stepGroup.variables.SOURCE_IMAGE_URL>
+                          imagePullPolicy: IfNotPresent
+                    - parallel:
                         - step:
-                            identifier: Build_Image
-                            type: Run
+                            identifier: aqua_saas_scan
+                            type: AquaSecurity
+                            name: Aqua SaaS Scan
                             spec:
+                              mode: orchestration
+                              config: default
+                              target:
+                                type: container
+                                workspace: <+stepGroup.variables.TAR_PATH>
+                                detection: manual
+                                name: <+stepGroup.variables.IMAGE_NAME>
+                                variant: <+stepGroup.variables.IMAGE_TAG>
+                              advanced:
+                                log:
+                                  level: info
+                                fail_on_severity: none
+                                args:
+                                  cli: "--dockerless --layer-vulnerabilities --direct-cc"
                               resources:
                                 limits:
-                                  memory: <+input>.default(4Gi).regex(^(500Mi|([5-7][0-9]{2}|[1-7][0-9]{3}|8000)Mi|([1-7]Gi|8Gi))$)
-                                  cpu: <+input>.default(2).regex(^(500m|[5-9][0-9]{2}m|[1-3]([0-9]{2})?m?|[1-3](\.[0-9]+)?|4(\.0+)?)$)
-                            timeout: <+input>
-                      variables:
-                        - name: IMAGE_REGISTRY
-                          type: String
-                          value: <+stage.spec.execution.steps.Check_Image.output.outputVariables.TARGET>
-                        - name: IMAGE_NAME
-                          type: String
-                          value: <+stage.variables.IMAGE_NAME>
-                        - name: IMAGE_TAG
-                          type: String
-                          value: <+stage.variables.IMAGE_TAG>
-                        - name: CMDB_APPID
-                          type: String
-                          value: <+stage.variables.CMDB_APPID>
-                        - name: DOCKER_FILE
-                          type: String
-                          value: <+input>.default(Dockerfile)
-                        - name: CONTEXT
-                          type: String
-                          value: <+input>.default(.)
-                        - name: BUILD_ARGS
-                          type: String
-                          value: <+input>
-                        - name: TARGET
-                          type: String
-                          value: <+input>
-                        - name: LOG_LEVEL
-                          type: String
-                          value: <+input>.default(warn).allowedValues(trace,debug,info,warn,error,fatal,panic)
-                      failureStrategies: <+input>
-                      when:
-                        stageStatus: All
-                        condition: <+execution.steps.Check_Image.output.outputVariables.BUILD> == "true"
-              - step:
-                  type: Run
-                  name: Pull Image to Tar
-                  identifier: Pull_Image_To_Tar
-                  spec:
-                    connectorRef: account.gcp_rtl_ssv_release_gar
-                    image: europe-docker.pkg.dev/ssv-rtl-devops-registry-624/release/harness/crane:debug
-                    shell: Sh
-                    command: |-
-                      crane auth login -u srv-harness-docker-global-read -p <+secrets.getValue("account.nexus_docker_sar_reader")> <+stage.spec.execution.steps.Check_Image.output.outputVariables.TARGET>
-                      crane pull ${SOURCE_IMAGE} ${TAR_PATH}
-                    envVariables:
-                      TAR_PATH: <+stage.variables.TAR_PATH>
-                      SOURCE_IMAGE: <+stage.spec.execution.steps.Build_Image.steps.Publish_SAR_Artefact_Metadata.artifact_Build_Image_Publish_SAR_Artefact_Metadata.stepArtifacts.publishedFileArtifacts[0].url>
-                    imagePullPolicy: IfNotPresent
-                  when:
-                    stageStatus: All
-                    condition: <+execution.steps.Check_Image.output.outputVariables.BUILD> == "true"
-              - parallel:
-                  - stepGroup:
-                      name: SBOM and IQ Scan
-                      identifier: SBOM_And_IQ_Scan
-                      steps:
+                                  memory: 4Gi
+                                  cpu: "2"
+                              privileged: true
+                              imagePullPolicy: IfNotPresent
+                              connectorRef: account.harness_ci_addon
+                              image:
+                                type: local_archive
+                                access_id: _json_key
+                                access_token: <+secrets.getValue("account.gcp_ddv_dv_staging_gar_push_gsa_json_key")>
+                                tag: <+stepGroup.variables.IMAGE_TAG>
+                              auth:
+                                access_token: <+secrets.getValue("account.aquasec_prod_token")>
+                                domain: https://6d1247bb0e.cloud.aquasec.com
+                            enforce:
+                              policySets:
+                                - account.Security_Test_Compliance
                         - stepGroup:
-                            name: SBOM
-                            identifier: SBOM
+                            name: NexusIQ Scan
+                            identifier: NexusIQ_Scan
                             template:
-                              templateRef: account.CI_StepGroup_SBOM_Generate
-                              versionLabel: v4.x.x
+                              templateRef: account.NexusIQ_Scan_StepGroup
+                              versionLabel: v0.2.0
                               templateInputs:
-                                steps:
-                                  - step:
-                                      identifier: Generate_SBOM
-                                      type: Run
-                                      resources:
-                                        limits:
-                                          memory: <+input>.default(1Gi).regex(^(500Mi|([5-7][0-9]{2}|[1-7][0-9]{3}|8000)Mi|([1-7]Gi|8Gi))$)
-                                          cpu: <+input>.default(1).regex(^(500m|[5-9][0-9]{2}m|[1-3]([0-9]{2})?m?|[1-3](\.[0-9]+)?|4(\.0+)?)$)
                                 variables:
-                                  - name: SOURCE
+                                  - name: cmdb_appid
                                     type: String
-                                    value: <+stage.variables.TAR_PATH>
-                                  - name: CMDB_APPID
+                                    value: <+input>
+                                  - name: SCAN_TARGET
                                     type: String
-                                    value: <+stage.variables.CMDB_APPID>
-                                  - name: BASE
-                                    type: String
-                                    value: /harness
-                                  - name: NAME
-                                    type: String
-                                    value: <+stage.variables.IMAGE_NAME>
-                                  - name: VERSION
-                                    type: String
-                                    value: <+stage.variables.IMAGE_TAG>
-                                  - name: SCOPE
-                                    type: String
-                                    value: <+input>.default(all-layers)
-                                  - name: OUTPUT
-                                    type: String
-                                    value: cyclonedx-json@1.4=/harness/sbom.json,cyclonedx-xml@1.4=/harness/sbom/bom.xml
-                                  - name: PARALLELISM
-                                    type: String
-                                    value: <+input>.default("1")
-                                  - name: ENRICH
-                                    type: String
-                                    value: <+input>.default(off).allowedValues(all,golang,java,javascript,off)
-                                    default: "off"
-                                  - name: VERBOSITY
-                                    type: String
-                                    value: <+input>.default(off).allowedValues(off, info, debug)
-                                failureStrategies: <+input>
-                                when: <+input>
-                        - parallel:
-                            - stepGroup:
-                                name: D3 Publish
-                                identifier: D3_Publish
-                                template:
-                                  templateRef: account.CI_StepGroup_D3_Submit
-                                  versionLabel: v0.x.x
-                                  templateInputs:
-                                    variables:
-                                      - name: URL
-                                        type: String
-                                        value: <+input>.default(https://prd-d3-apis.tool01-ew2.c2.lbgcp.cloud/v1/events/providers/standard_managed_pipeline/prod).allowedValues(https://pre-d3-apis.tool01-pre-ew2.c2.test.lbgcp.cloud/v1/events/providers/standard_managed_pipeline/nonprod,https://prd-d3-apis.tool01-ew2.c2.lbgcp.cloud/v1/events/providers/standard_managed_pipeline/prod)
-                                      - name: SBOM
-                                        type: String
-                                        value: <+stage.spec.execution.steps.SBOM_And_IQ_Scan.steps.SBOM.steps.Generate_SBOM.output.outputVariables.CYCLONEDX_JSON_PATH>
-                                      - name: KEY
-                                        type: String
-                                        value: <+input>.default(<+secrets.getValue("account.d3_hmac_secret_key_prd")>)
-                                      - name: SKIPTLS
-                                        type: String
-                                        value: <+input>.default(false).allowedValues(true, false)
-                                      - name: DEBUG
-                                        type: String
-                                        value: <+input>.default(false).allowedValues(true, false)
-                                    when: <+input>
-                                    failureStrategies: <+input>
-                            - stepGroup:
-                                name: NexusIQ Scan
-                                identifier: NexusIQ_Scan
-                                template:
-                                  templateRef: account.CI_StepGroup_Scan_NexusIQ
-                                  versionLabel: v1.x.x
-                                  templateInputs:
-                                    steps:
-                                      - step:
-                                          identifier: NexusIQ_Scan
-                                          type: Run
-                                          spec:
-                                            resources:
-                                              limits:
-                                                memory: <+input>.default(1Gi).regex(^(500Mi|([5-7][0-9]{2}|[1-7][0-9]{3}|8000)Mi|([1-7]Gi|8Gi))$)
-                                                cpu: <+input>.default(1).regex(^(500m|[5-9][0-9]{2}m|[1-3]([0-9]{2})?m?|[1-3](\.[0-9]+)?|4(\.0+)?)$)
-                                    variables:
-                                      - name: APPLICATION_ID
-                                        type: String
-                                        value: <+input>.default(<+pipeline.tags.cmdb_appid>-<+pipeline.properties.ci.codebase.repoName>-image)
-                                      - name: SCAN_TARGET
-                                        type: String
-                                        value: <+stage.spec.execution.steps.SBOM_And_IQ_Scan.steps.SBOM.steps.Generate_SBOM.output.outputVariables.CYCLONEDX_XML_PATH>
-                                    failureStrategies: <+input>
-                                    when: <+input>
-                      when:
-                        stageStatus: Success
-                        condition: <+execution.steps.Check_Image.output.outputVariables.BUILD> == "true"
-                  - stepGroup:
-                      name: Aqua Scan
-                      identifier: Aqua_Scan
-                      template:
-                        templateRef: account.CI_StepGroup_Scan_Aquasec
-                        versionLabel: v2.x.x
-                        templateInputs:
-                          steps:
-                            - step:
-                                identifier: Aqua_Scan
-                                type: Run
-                                spec:
-                                  resources:
-                                    limits:
-                                      memory: <+input>.default(1Gi).regex(^(500Mi|([5-7][0-9]{2}|[1-7][0-9]{3}|8000)Mi|([1-7]Gi|8Gi))$)
-                                      cpu: <+input>.default(1).regex(^(500m|[5-9][0-9]{2}m|[1-3]([0-9]{2})?m?|[1-3](\.[0-9]+)?|4(\.0+)?)$)
-                            - step:
-                                identifier: Aqua_Ingest
-                                type: AquaSecurity
-                                spec:
-                                  resources:
-                                    limits:
-                                      memory: <+input>.default(1Gi).regex(^(500Mi|([5-7][0-9]{2}|[1-7][0-9]{3}|8000)Mi|([1-7]Gi|8Gi))$)
-                                      cpu: <+input>.default(1).regex(^(500m|[5-9][0-9]{2}m|[1-3]([0-9]{2})?m?|[1-3](\.[0-9]+)?|4(\.0+)?)$)
-                          variables:
-                            - name: REGISTER
-                              type: String
-                              value: <+input>.default(true).allowedValues(true,false)
-                            - name: AQUA_REGISTRY
-                              type: String
-                              value: <+input>.default(global_all_docker_innersource-artefacts-docker.lloydsbanking.cloud).allowedValues(global_all_docker_innersource-artefacts-docker.lloydsbanking.cloud,gcp_rtl_gar_europe-docker.pkg.dev,global_all_docker_private-artefacts-docker.lloydsbanking.cloud,gcp_tst_gar_dv-europe-docker.pkg.dev)
-                            - name: SCAN_TYPE
-                              type: String
-                              value: <+input>.default(build).allowedValues(build,ingestion)
-                            - name: IMAGE_NAME
-                              type: String
-                              value: <+<+stage.spec.execution.steps.Build_Image.steps.Publish_SAR_Artefact_Metadata.artifact_Build_Image_Publish_SAR_Artefact_Metadata.stepArtifacts.publishedFileArtifacts[0].url>.split(':')[0]>
-                            - name: IMAGE_TAG
-                              type: String
-                              value: <+<+stage.spec.execution.steps.Build_Image.steps.Publish_SAR_Artefact_Metadata.artifact_Build_Image_Publish_SAR_Artefact_Metadata.stepArtifacts.publishedFileArtifacts[0].url>.split(':')[1]>
-                            - name: OUTPUT_PATH
-                              type: String
-                              value: <+input>.default(/harness/aquascan.json)
-                            - name: TAR_PATH
-                              type: String
-                              value: <+input>.default(/harness/image.tar)
-                            - name: DEBUG
-                              type: String
-                              value: <+input>.default(false).allowedValues(true,false)
-                          failureStrategies: <+input>
-                          when:
-                            stageStatus: All
-                            condition: <+execution.steps.Check_Image.output.outputVariables.BUILD> == "true"
-              - parallel:
-                  - step:
-                      type: Run
-                      name: Additional Registry Push
-                      identifier: Additional_Registry_Push
-                      spec:
-                        connectorRef: account.gcp_rtl_ssv_release_gar
-                        image: europe-docker.pkg.dev/ssv-rtl-devops-registry-624/release/quay.io/skopeo/stable:v1.18.0
-                        shell: Sh
-                        command: |-
-                          set -e
-                          if [ "$PUSH_GCP_IDP" == "true" ]; then
-                            echo "Copying ${SOURCE_IMAGE} to ${GCP_IDP_HOST}/<+org.identifier>/<+project.identifier>/${IMAGE_NAME}:${IMAGE_TAG}"
-                            skopeo login -u srv-harness-docker-global-read -p <+secrets.getValue("account.nexus_docker_sar_reader")> ${SOURCE_REGISTRY}
-                            skopeo login -u oauth2accesstoken -p <+secrets.getValue("account.gcp_rtl_ssv_gar_rw_gsa")> europe-docker.pkg.dev
-                            skopeo copy --preserve-digests docker://${SOURCE_IMAGE} docker://${GCP_IDP_HOST}/<+org.identifier>/<+project.identifier>/${IMAGE_NAME}:${IMAGE_TAG}
-                          fi
-                          if [ "$PUSH_AZURE_IDP" == "true" ]; then
-                            echo "Copying ${SOURCE_IMAGE} to ${AZURE_IDP_HOST}/<+org.identifier>/<+project.identifier>/${IMAGE_NAME}:${IMAGE_TAG}"
-                            skopeo login -u srv-harness-docker-global-read -p <+secrets.getValue("account.nexus_docker_sar_reader")> ${SOURCE_REGISTRY}
-                            skopeo login -u <+variable.account.azure_stratos_ddv_clientid> -p <+secrets.getValue("account.azure_stratos_dev_acr_token")> uksrtlssvrelease.azurecr.io
-                            skopeo copy --preserve-digests docker://${SOURCE_IMAGE} docker://${AZURE_IDP_HOST}/<+org.identifier>/<+project.identifier>/${IMAGE_NAME}:${IMAGE_TAG}
-                          fi
-                        envVariables:
-                          SOURCE_REGISTRY: <+stage.spec.execution.steps.Check_Image.output.outputVariables.TARGET>
-                          SOURCE_IMAGE: <+stage.spec.execution.steps.Check_Image.output.outputVariables.TARGET>/<+<+org.identifier>.toLowerCase().replace("_","-")>/<+<+project.identifier>.toLowerCase().replace("_","-")>/<+pipeline.tags.cmdb_appid>/images/<+stage.variables.IMAGE_NAME>:<+stage.variables.IMAGE_TAG>
-                          TAR_PATH: <+stage.variables.TAR_PATH>
-                          IMAGE_NAME: <+stage.variables.IMAGE_NAME>
-                          IMAGE_TAG: <+stage.variables.IMAGE_TAG>
-                          PUSH_GCP_IDP: <+stage.variables.PUSH_GCP_IDP>
-                          GCP_IDP_HOST: <+stage.variables.GCP_IDP_HOST>
-                          PUSH_AZURE_IDP: <+stage.variables.PUSH_AZURE_IDP>
-                          AZURE_IDP_HOST: <+stage.variables.AZURE_IDP_HOST>
-                          PUSH_OCP: <+stage.variables.PUSH_OCP>
-                          OCP_HOST: <+stage.variables.OCP_HOST>
-                        outputVariables:
-                          - name: IMAGE_URL
-                            type: String
-                            value: IMAGE_URL
-                          - name: IMAGE_TAG
-                            type: String
-                            value: IMAGE_TAG
-                          - name: IMAGE_SHA
-                            type: String
-                            value: IMAGE_SHA
-                        imagePullPolicy: IfNotPresent
-                      when:
-                        stageStatus: All
-                        condition: <+execution.steps.Check_Image.output.outputVariables.BUILD> == "true"
-                    contextType: Pipeline
-                  - step:
-                      type: Run
-                      name: Output
-                      identifier: Output
-                      spec:
-                        connectorRef: account.gcp_rtl_ssv_release_gar
-                        image: europe-docker.pkg.dev/ssv-rtl-devops-registry-624/release/docker.io/alpine:3.21.0
-                        shell: Sh
-                        command: |
-                          export IMAGE_URL=$IMAGE_URL
-                          export IMAGE_TAG=$IMAGE_TAG
-                          if [ "$BUILT_IMAGE_SHA" == "null" ]; then
-                            echo No Image Built - Output existing SHA $EXISTING_IMAGE_SHA
-                            export IMAGE_SHA=$EXISTING_IMAGE_SHA
-                          else
-                            echo Image Built - Output created SHA $BUILT_IMAGE_SHA
-                            export IMAGE_SHA=$BUILT_IMAGE_SHA
-                          fi
-                        envVariables:
-                          IMAGE_URL: <+stage.variables.IMAGE_NAME>
-                          IMAGE_TAG: <+stage.variables.IMAGE_TAG>
-                          EXISTING_IMAGE_SHA: <+stage.spec.execution.steps.Check_Image.output.outputVariables.SHA>
-                          BUILT_IMAGE_SHA: <+stage.spec.execution.steps.Build_Image.steps.Build_Image.output.outputVariables.SHA>
-                        outputVariables:
-                          - name: IMAGE_URL
-                          - name: IMAGE_TAG
-                          - name: IMAGE_SHA
-          caching:
-            enabled: true
-            paths: []
-            override: false
-          buildIntelligence:
-            enabled: false
-        variables:
-          - name: IMAGE_NAME
-            type: String
-            description: Image name, excluding registry and tag, e.g. my/image
-            required: true
-            value: <+input>.regex(^[a-z0-9]+(?:[._-][a-z0-9]+)*$)
-          - name: IMAGE_TAG
-            type: String
-            description: Image tag, excluding registry and tag, e.g. my/image. Note that SAR does not support artefact overwrite and hence if a tag exists on SAR, the build will be skipped.
-            required: true
-            value: <+input>.regex(^[a-zA-Z0-9._-]+$)
-          - name: CMDB_APPID
-            type: String
-            description: SNow Application ID
-            value: <+pipeline.tags.cmdb_appid>
-          - name: BUILD_TYPE
-            type: String
-            description: Build Staging or Release Image; Staging Images may not be deployed beyond Pre-Prod environments
-            value: <+input>.default(release).allowedValues(staging,release)
-          - name: SAR_REGISTRY_TYPE
-            type: String
-            description: Single Artefact Registry artefact visibility. Private artefacts can only be accessed by individuals within the T2 Group; Innersource Artefectas can be accessed by all
-            value: <+input>.default(innersource).allowedValues(private,innersource)
-          - name: PUSH_GCP_IDP
-            type: String
-            description: Push to Google Cloud Platform Internal Developer Portal registry
-            value: <+input>.default(false).allowedValues(true,false)
-          - name: GCP_IDP_HOST
-            type: String
-            description: Google Cloud Platform Internal Developer Portal registry prefix
-            value: europe-docker.pkg.dev/ssv-rtl-devops-registry-624/docker-release
-          - name: PUSH_AZURE_IDP
-            type: String
-            description: Push to Azure Internal Developer Portal registry
-            value: <+input>.default(false).allowedValues(true,false)
-          - name: AZURE_IDP_HOST
-            type: String
-            description: Azure Internal Developer Portal registry prefix
-            value: uksrtlssvrelease.azurecr.io/docker-release
-          - name: SAR_INNERSOURCE_STAGING_HOST
-            type: String
-            description: Innersource Single Artefact Registry Staging prefix
-            value: innersource-artefacts-docker-staging.lloydsbanking.cloud
-          - name: SAR_INNERSOURCE_RELEASE_HOST
-            type: String
-            description: Innersource Single Artefact Registry Release prefix
-            value: innersource-artefacts-docker.lloydsbanking.cloud
-          - name: SAR_PRIVATE_STAGING_HOST
-            type: String
-            description: Private Single Artefact Registry Staging prefix
-            value: private-artefacts-docker-staging.lloydsbanking.cloud
-          - name: SAR_PRIVATE_RELEASE_HOST
-            type: String
-            description: Private Single Artefact Registry Release prefix
-            value: private-artefacts-docker.lloydsbanking.cloud
-          - name: TAR_PATH
-            type: String
-            description: Sets the path the image will be stored to for scanning
-            value: <+input>.default(/harness/image.tar)
-          - name: LOG_LEVEL
-            type: String
-            description: Log level for Build diagnostics
-            value: <+input>.default(warn).allowedValues(error,warn,info,debug)
-        when: <+input>
-        failureStrategies: <+input>
-        name: CI Build
-        identifier: CI_Build
+                                    value: /harness/image.tar
+                    - step:
+                        type: Plugin
+                        name: Publish to Dev
+                        identifier: pusblish_to_dev
+                        spec:
+                          connectorRef: account.gcp_ddv_dv_staging_gar
+                          image: europe-docker.pkg.dev/dv-sts-psv-tool-svc-bak-08870/staging/docker.io/plugins/image-migration:linux-amd64
+                          settings:
+                            source: <+stepGroup.variables.SOURCE_IMAGE_URL>
+                            destination: <+stepGroup.variables.DESTINATION_IMAGE_URL>
+                            username: _json_key
+                            password: <+secrets.getValue("account.gcp_ddv_dv_staging_gar_push_gsa_json_key")>
+                            overwrite: "true"
+                    - step:
+                        type: Plugin
+                        name: Publish Image Path
+                        identifier: publish_nexusiq_report
+                        spec:
+                          connectorRef: account.gcp_ddv_dv_staging_gar
+                          image: europe-docker.pkg.dev/dv-sts-psv-tool-svc-bak-08870/staging/docker.io/plugins/artifact-metadata-publisher:2.1.0
+                          settings:
+                            file_urls: https://<+stepGroup.variables.DESTINATION_IMAGE_URL>
+                            artifact_file: Container Image Staging Registry URL
+                          imagePullPolicy: IfNotPresent
+                  variables:
+                    - name: SOURCE_IMAGE_URL
+                      type: String
+                      description: ""
+                      value: europe-docker.pkg.dev/dv-sts-psv-tool-svc-bak-08870/build/<+stepGroup.variables.ORG_ID>/<+stepGroup.variables.PROJECT_ID>/<+stepGroup.variables.CMDB_APPID>/images/<+stepGroup.variables.IMAGE_NAME>:<+stepGroup.variables.IMAGE_TAG>
+                    - name: DESTINATION_IMAGE_URL
+                      type: String
+                      description: ""
+                      value: europe-docker.pkg.dev/dv-sts-psv-tool-svc-bak-08870/staging/<+stepGroup.variables.ORG_ID>/<+stepGroup.variables.PROJECT_ID>/<+stepGroup.variables.CMDB_APPID>/images/<+stepGroup.variables.IMAGE_NAME>:<+stepGroup.variables.IMAGE_TAG>
+                    - name: IMAGE_NAME
+                      type: String
+                      value: <+input>.regex(^[a-z0-9]+(?:[._-][a-z0-9]+)*$)
+                      description: |
+                        This variable specifies the name of the image to be built.
+                        It should not include the repository name. For example, myapp or myapp:latest.
+                        This variable is used in the build command to name the resulting image appropriately.
+                      required: true
+                    - name: IMAGE_TAG
+                      type: String
+                      value: <+input>.regex(^[a-zA-Z0-9._-]+$)
+                      description: |
+                        This variable specifies the tag for the image to be built.
+                        It is used to identify the specific version of the image, such as v1.0, or any other versioning scheme you use.
+                        This variable is combined with the IMAGE_NAME in the build command to tag the resulting image correctly.
+                      required: true
+                    - name: CMDB_APPID
+                      type: String
+                      value: <+input>.regex(^al\d{5}$)
+                      description: |
+                        This variable holds the unique identifier for the application in ServiceNow related to the pipeline.
+                        The identifier starts with the prefix al followed by exactly five numeric digits.
+                        This ensures that each application has a distinct and consistent identifier format.
+                        This will be used in the build process as part of the repository path to ensure the image is stored in a unique path.
+                        This should be avaialble for input via the expression <+pipeline.tags.cmdb_appid>
+                      required: true
+                    - name: ORG_ID
+                      type: String
+                      value: <+<+org.identifier>.toLowerCase().replace("_","-")>
+                      description: "Override default org identifier with underscores replaced with hyphens so it is a valid string for container repository paths "
+                      required: true
+                    - name: PROJECT_ID
+                      type: String
+                      value: <+<+project.identifier>.toLowerCase().replace("_","-")>
+                      description: Override default project identifier with underscores replaced with hyphens so it is a valid string for container repository paths
+                      required: true
+                    - name: TAR_PATH
+                      type: String
+                      value: /harness/image.tar
+                      description: Sets the path the image will be stored to for scanning
+                      required: false
+                  name: Image build
+                  identifier: Image_build
